@@ -13,14 +13,28 @@ from typing import Iterable, Mapping, Literal
 
 import pandas as pd
 
-FMP_BASE = "https://financialmodelingprep.com/api/v3"
-FMP_BASE_stable = "https://financialmodelingprep.com/stable" 
+FMP_BASE_stable = "https://financialmodelingprep.com/stable"
 
-FMP_DOMAINS = [
-    FMP_BASE, 
-    FMP_BASE_stable,   # fallback
-]
+FMP_DOMAINS = [FMP_BASE_stable]  # v3 is retired by FMP (returns [] for every endpoint)
 # data = cached_get_json(url, force_refresh=True) #force a refresh on the data
+
+#-----------------------------------------------------------------------------------------------------------------#
+# Statements only change when a new filing lands (quarterly), so they can be cached for a week.
+# Price-dependent endpoints (key-metrics, ratios, enterprise-values, quote) keep the 24h default.
+STATEMENT_TTL = 7 * 24 * 3600
+STATEMENT_ENDPOINTS = {"income-statement", "balance-sheet-statement", "cash-flow-statement"}
+
+def _fetch_first_list(path: str, ttl: int | None = None) -> list | None:
+    """
+    GET `path` (e.g. "income-statement?symbol=AAPL&apikey=…") from each FMP domain
+    in turn and return the first non-empty list, or None if every domain came back empty.
+    `ttl` (seconds) overrides the cache default when given.
+    """
+    for base in FMP_DOMAINS:
+        data = cached_get_json(f"{base}/{path}", **({"ttl": ttl} if ttl else {}))
+        if isinstance(data, list) and data:
+            return data
+    return None
 
 #-----------------------------------------------------------------------------------------------------------------#
 # Forward‑looking Price to Earnings (PE) helper
@@ -36,23 +50,14 @@ def fetch_analyst_estimates(
     year:
         • Jan‑Aug ➜ current calendar year
         • Sep‑Dec ➜ next calendar year
-
-    Tries /api/v3 first (where FMP now hosts analyst data), then /stable.
     """
     result: dict[str, float | None] = {f: None for f in fields}
 
-    # Try v3 first, then stable
-    for base in (FMP_BASE, FMP_BASE_stable):          # note the order
-        url = (
-            f"{base}/analyst-estimates"
-            f"?symbol={ticker}&period={period}"
-            f"&apikey={api_key or FMP_API_KEY}"
-        )
-        data = cached_get_json(url)
-        if isinstance(data, list) and data:
-            break
-    else:
-        return result                             # nothing from either domain
+    data = _fetch_first_list(
+        f"analyst-estimates?symbol={ticker}&period={period}&apikey={api_key or FMP_API_KEY}"
+    )
+    if data is None:
+        return result                             # nothing from FMP
 
     # Choose which fiscal year’s estimate to use
     today = datetime.now(timezone.utc)
@@ -89,28 +94,21 @@ def fetch_history(
 
     Returns a DataFrame sorted by 'date' descending (newest first).
     """
-    domains = FMP_DOMAINS if try_fallback else FMP_DOMAINS[:1]
+    data = _fetch_first_list(
+        f"{endpoint}?symbol={ticker}&period={period}&limit={limit}&apikey={FMP_API_KEY}",
+        ttl=STATEMENT_TTL if endpoint in STATEMENT_ENDPOINTS else None,
+    )
+    if data is None:
+        return None
 
-    for base in domains:
-        url = (
-            f"{base}/{endpoint}"
-            f"?symbol={ticker}&period={period}&limit={limit}"
-            f"&apikey={FMP_API_KEY}"
-        )
-        
-        data = cached_get_json(url)
+    df = pd.DataFrame(data)
 
-        if isinstance(data, list) and data:
-            df = pd.DataFrame(data)
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce", utc=True)
+        # ── sort by date descending so row 0 is always newest
+        df = df.sort_values("date", ascending=False).reset_index(drop=True)
 
-            if "date" in df.columns:
-                df["date"] = pd.to_datetime(df["date"], errors="coerce", utc=True)
-                # ── sort by date descending so row 0 is always newest
-                df = df.sort_values("date", ascending=False).reset_index(drop=True)
-
-            return df
-
-    return None
+    return df
 
 #-----------------------------------------------------------------------------------------------------------------#
 # The ttm endpoints need their own function, i guess, since we are not specifying a quarter or annual. The url is simpler.
@@ -140,15 +138,10 @@ def fetch_ttm(
         { "priceToEarningsRatioTTM": 42.3, "evToEBITDATTM": None, … }
     """
 
-    data = []
-    for base in FMP_DOMAINS:
-        url = f"{base}/{endpoint}?symbol={ticker}&apikey={FMP_API_KEY}"
-        data = cached_get_json(url)
-        if isinstance(data, list) and data:
-            break
+    data = _fetch_first_list(f"{endpoint}?symbol={ticker}&apikey={FMP_API_KEY}")
 
     # Ensure predictable output on error / empty response
-    if not isinstance(data, list) or not data:
+    if not data:
         requested = list(fields) if fields is not None else []
         return {field: None for field in requested}
 
@@ -180,21 +173,12 @@ def fetch_single(
         fetch_single("enterprise-values", "AAPL", ["enterpriseValue"],
                      period="quarter", limit=1)
     """
-    data = []
-    for base in FMP_DOMAINS:
-        url = (
-            f"{base}/{endpoint}"
-            f"?symbol={ticker}"
-            f"&period={period}"
-            f"&limit={limit}"
-            f"&apikey={api_key or FMP_API_KEY}"
-        )
-        data = cached_get_json(url)
-        if isinstance(data, list) and data:
-            break
+    data = _fetch_first_list(
+        f"{endpoint}?symbol={ticker}&period={period}&limit={limit}&apikey={api_key or FMP_API_KEY}"
+    )
 
     # If nothing came back, return None for each requested field
-    if not isinstance(data, list) or not data:
+    if not data:
         return {field: None for field in (fields or [])}
 
     latest = data[0]

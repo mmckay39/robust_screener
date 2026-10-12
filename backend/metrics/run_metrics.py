@@ -34,7 +34,14 @@ from core.fetchers import (
     fetch_history,        # quarterly / annual statements
     fetch_analyst_estimates,# forward EPS
 )
-from calc.ttm import calc_ttm
+from calc.ttm import (
+    calc_ttm,
+    quarterly_op_margin,
+    build_earnings_yield_df,
+    compute_roic_ttm,
+    compute_fcf_yield_ttm,
+    compute_ev_to_sales_ttm,
+)
 from metrics.value_quality import add_value_quality_metrics
 
 from calc.boosts import (
@@ -46,16 +53,12 @@ from calc.boosts import (
     earnings_yield_boost,
 )
 
-from core.helpers import (
+from calc.fallbacks import (
     annual_fallback,
-    compute_roic_ttm,
-    compute_fcf_yield_ttm,
-    compute_ev_to_sales_ttm,
-    build_earnings_yield_df,
-    quarterly_op_margin,
     try_fallbacks,
-    
 )
+
+from io import StringIO
 
 import pandas as pd
 
@@ -112,12 +115,10 @@ ZERO_INVALID_COLS = [
     # …add anything else where 0 means “missing”
 ]
 
-def build_universe_df(tickers: list[str], universe: str, price_mi: pd.DataFrame) -> pd.DataFrame:
+def build_universe_df(tickers: list[str], universe: str) -> pd.DataFrame:
 
     # ➊ Refresh fundamentals cache (adds last_report_date, fetched_at)
-    from functools import partial
-    row_fn = partial(fetch_row, price_mi=price_mi)
-    fund_df = refresh_if_needed(universe, tickers, build_row_fn=row_fn)
+    fund_df = refresh_if_needed(universe, tickers, build_row_fn=fetch_row)
 
     # ➋ Tidy: index by ticker & turn 0→pd.NA for known “zero means missing” cols
     fund_df = fund_df.set_index("ticker")
@@ -129,7 +130,30 @@ def build_universe_df(tickers: list[str], universe: str, price_mi: pd.DataFrame)
 
     return df
 
-def fetch_row(tkr: str, price_mi: pd.DataFrame) -> dict[str, float | None]:
+def add_earnings_yield_boost(df: pd.DataFrame, price_mi: pd.DataFrame) -> pd.DataFrame:
+    """
+    Earnings‑yield trend boost: joins each ticker's cached quarterly EPS (eps_history)
+    to its price history, then runs earnings_yield_boost. Needs prices, so it runs
+    after update_universe() rather than inside the fundamentals fetch.
+    """
+    if "eps_history" not in df.columns:
+        df["eps_history"] = None
+
+    boosts = {}
+    for tkr, raw in df["eps_history"].items():
+        ey__quarterly_df = None
+        try:
+            ticker_price_df = price_mi.xs(tkr, level="ticker")  # gets just this ticker's data
+            if not ticker_price_df.empty and isinstance(raw, str):
+                ey__quarterly_df = build_earnings_yield_df(pd.read_json(StringIO(raw)), ticker_price_df)
+        except KeyError:
+            pass                                                # price history missing → boost stays None
+        boosts[tkr] = earnings_yield_boost(ey__quarterly_df)
+
+    df["earnings_yield_boost"] = pd.Series(boosts, dtype="float64")
+    return df.drop(columns=["eps_history"])
+
+def fetch_row(tkr: str) -> dict[str, float | None]:
 
     """
     Collect all metrics for *one* ticker and return a row-dict.
@@ -157,23 +181,22 @@ def fetch_row(tkr: str, price_mi: pd.DataFrame) -> dict[str, float | None]:
     c_f_s_ttm_calc = calc_ttm(c_f_s, CASH_FLOW_FIELDS)
     cf_annual = fetch_history("cash-flow-statement", tkr, "annual", 4)
 
+    # balance-sheet pull shared by ROIC, EV-to-sales and total assets (newest row = row 0)
+    bs_q = fetch_history("balance-sheet-statement", tkr, "quarter", 7)
+
     # --- price, forward EPS, enterprise value --------------------------------    
     price            = fetch_single("quote-short", tkr, ["price"]).get("price") # price ✅
     eps_avg          = fetch_analyst_estimates(tkr, ["epsAvg"]).get("epsAvg") # epsAvg works ✅, did 2025 in a list of future past
     # enterprise_value = fetch_single("enterprise-values", tkr, ["enterpriseValue"]).get("enterpriseValue") #enterpriseValue
     # total_assets     = fetch_single("balance-sheet-statement", tkr, ["totalAssets"]).get("totalAssets") # totalAssets
     enterprise_value = fetch_single("enterprise-values", tkr, ["enterpriseValue"], period="quarter", limit=1).get("enterpriseValue")
-    total_assets = fetch_single("balance-sheet-statement", tkr, ["totalAssets"], period="quarter", limit=1).get("totalAssets")
+    total_assets = None
+    if bs_q is not None and not bs_q.empty and pd.notna(bs_q.iloc[0].get("totalAssets")):
+        total_assets = bs_q.iloc[0]["totalAssets"]
 
-    # ── build earnings-yield DF from price_mi for boost──────────────────────── 
-    ey__quarterly_df = None
-    try:
-        ticker_price_df = price_mi.xs(tkr, level="ticker") # gets just this ticker's data
-        if not ticker_price_df.empty:
-            ey__quarterly_df = build_earnings_yield_df(i_s, ticker_price_df)
-    except KeyError:
-        # price history missing → leave ey__quarterly_df as None
-        ticker_price_df = pd.DataFrame(columns=["close", "volume"])
+    # ── quarterly EPS for the earnings-yield boost (joined to prices in add_earnings_yield_boost) ──
+    eps_keep = [c for c in ["date", "eps", "symbol", "period"] if i_s is not None and c in i_s.columns]
+    eps_history = i_s[eps_keep].to_json(orient="records", date_format="iso") if eps_keep and not i_s.empty else None
 
     # ── add sector & industry from the “profile” endpoint ─────────────────────
     profile = fetch_single("profile", tkr, ["sector", "industry"])
@@ -186,7 +209,9 @@ def fetch_row(tkr: str, price_mi: pd.DataFrame) -> dict[str, float | None]:
     
     # if that is still zero, calculate price/(netIncomeTTM/weightedAverageShsOutDil)
     if priceToEarningsRatioTTM in (None, 0):
-        weightedAverageShsOutDil = fetch_single("income-statement", tkr, ["weightedAverageShsOutDil"]).get("weightedAverageShsOutDil") # weightedAverageShsOutDil            
+        weightedAverageShsOutDil = None
+        if i_s is not None and not i_s.empty and pd.notna(i_s.iloc[0].get("weightedAverageShsOutDil")):
+            weightedAverageShsOutDil = i_s.iloc[0]["weightedAverageShsOutDil"] # weightedAverageShsOutDil
         netIncomeTTM             = i_s_ttm_calc.get("netIncome")           
                 
         if all(isinstance(v, (int, float)) and v != 0 for v in (price, netIncomeTTM, weightedAverageShsOutDil)):
@@ -227,7 +252,7 @@ def fetch_row(tkr: str, price_mi: pd.DataFrame) -> dict[str, float | None]:
         
     # --- ROIC fallback -----------------------------------------------
     if returnOnInvestedCapitalTTM in (None, 0):
-        returnOnInvestedCapitalTTM = compute_roic_ttm(tkr) # special function for manual roic ttm calc
+        returnOnInvestedCapitalTTM = compute_roic_ttm(i_s, bs_q) # special function for manual roic ttm calc
         print("\nUsed fallback for returnOnInvestedCapitalTTM")
     
     if returnOnInvestedCapitalTTM in (None, 0) and k_m_annual is not None and not k_m_annual.empty:
@@ -236,7 +261,7 @@ def fetch_row(tkr: str, price_mi: pd.DataFrame) -> dict[str, float | None]:
     # --- freeCashFlowYieldTTM fallback -----------------------------------------------    
     if freeCashFlowYieldTTM in (None, 0):
         # get from special function for manual fcf yield calc
-        freeCashFlowYieldTTM = compute_fcf_yield_ttm(tkr, price)
+        freeCashFlowYieldTTM = compute_fcf_yield_ttm(c_f_s, i_s, price)
         print("\nUsed fallback for freeCashFlowYieldTTM")
 
     
@@ -247,7 +272,7 @@ def fetch_row(tkr: str, price_mi: pd.DataFrame) -> dict[str, float | None]:
     # --- evToSalesTTM  -----------------------------------------------
     evToSalesTTM = try_fallbacks(
         k_m_ttm.get("evToSalesTTM"),
-        compute_ev_to_sales_ttm(tkr, price),
+        compute_ev_to_sales_ttm(i_s, bs_q, price),
         annual_fallback(k_m_annual, "evToSales", None) if k_m_annual is not None and not k_m_annual.empty else None,
         verbose_name="evToSalesTTM"
 )
@@ -267,8 +292,7 @@ def fetch_row(tkr: str, price_mi: pd.DataFrame) -> dict[str, float | None]:
     fcf_cagr = fcf_cagr_boost(cf_annual)
     # fallback to quarterly if annual missing
     if fcf_cagr is None:
-        cf_q = fetch_history("cash-flow-statement", tkr, "quarter", 16)
-        fcf_cagr = fcf_cagr_boost(cf_q)
+        fcf_cagr = fcf_cagr_boost(c_f_s)
 
     # ── slope‑boost inputs ───────────────────────────────────────
     boosts = {
@@ -277,7 +301,6 @@ def fetch_row(tkr: str, price_mi: pd.DataFrame) -> dict[str, float | None]:
         "op_margin_boost":   op_margin_boost(o_p_m_quarter),
         "roic_boost":        roic_boost(k_m_annual),
         "fcf_cagr_boost":    fcf_cagr,
-        "earnings_yield_boost": earnings_yield_boost(ey__quarterly_df),
     }
 
     # ── consolidate key‑metrics fields that survived fallbacks ───────────────────
@@ -321,6 +344,9 @@ def fetch_row(tkr: str, price_mi: pd.DataFrame) -> dict[str, float | None]:
 
         # all six boosts
         **boosts,
+
+        # quarterly EPS, used later by add_earnings_yield_boost
+        "eps_history":                    eps_history,
     }
     # print(row)
     # Stamp with Eastern timestamps

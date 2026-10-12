@@ -90,10 +90,14 @@ def build_hqm(
             row[f"{d}D"] = _return(frame["close"], d)
         rows.append(row)
 
+    empty = pd.DataFrame(columns=["ticker", "HQM_SCORE",
+                                  "DOLLAR_VOLUME", "TURNOVER_RATIO"])
+    if not rows:
+        return empty
+
     hqm = pd.DataFrame(rows).dropna(subset=[f"{d}D" for d in rank_days])
     if hqm.empty:
-        return pd.DataFrame(columns=["ticker", "HQM_SCORE",
-                                     "DOLLAR_VOLUME", "TURNOVER_RATIO"])
+        return empty
 
     # ── 2️⃣  Percentiles & composite score ────────────────────────────
     pct_cols = []

@@ -1,16 +1,17 @@
 # ── main ─────────────────────────────────────────────────────────────────────
 import argparse
 import sys
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 from core.prices import update_universe
 from metrics.hqm import build_hqm
 
-from metrics.run_metrics import build_universe_df
+from metrics.run_metrics import build_universe_df, add_earnings_yield_boost
 from metrics.value_quality import add_value_quality_metrics
 from calc.rank import add_ranks, FINAL_ORDER
 from core.paths import OUTPUT_DIR
-from core.excel_export import export_to_excel
+from core.excel_export import export_to_excel, SCI_COLS
 
 try:
     from universes import (
@@ -59,13 +60,19 @@ def main() -> None:  # pragma: no-cover
 
     print(f"📥  Universe '{universe}' – {len(symbols)} symbols")
 
-    # ── ➊ Refresh price history for HQM ────────────────────────────────
-    price_mi = update_universe(universe, symbols)  # MultiIndex frame
+    # ── ➊ + ➋ Prices (HQM) and fundamentals run side by side ─────────────
+    # Both are network-bound and share one FMP rate limiter (core/cache.py),
+    # so they overlap while each waits on the API.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fund_future = pool.submit(build_universe_df, symbols, universe)
+        price_mi = update_universe(universe, symbols)  # MultiIndex frame
+        df_fundamantals = fund_future.result()
+
     price_mi = price_mi.drop(columns=["open", "high", "low"], errors="ignore")
     # price_mi = _load_prices(universe)
 
-    # ── ➋ Fundamentals: refresh stale tickers (TTL) and fetch new ones ──
-    df_fundamantals = build_universe_df(symbols, universe, price_mi)
+    # earnings-yield boost needs both the EPS history (fundamentals) and prices
+    df_fundamantals = add_earnings_yield_boost(df_fundamantals, price_mi)
     # ensure index=ticker for the rest of main()
     # print("\nDataFrame structure:")
     # print(f"Index: {df.index.name}")
@@ -136,13 +143,14 @@ def main() -> None:  # pragma: no-cover
         .loc[:, full_cols]
     )
 
-    # 1) Round numeric values
-    # Round all float columns EXCEPT TURNOVER_RATIO to 2 decimal places
-    for col in df.select_dtypes(include='float'):
-        if col == "TURNOVER_RATIO":
-            df[col] = df[col].round(6)  # or however many places you want
-        else:
-            df[col] = df[col].round(2)
+    # 1) Round the Excel copy (the parquet below keeps full precision)
+    #    percent returns & price → 2 dp; percentile ranks, scores, yields, boosts → 4 dp;
+    #    SCI_COLS stay unrounded and are shown in scientific notation by the export instead
+    two_dp = [*pct_HQM_cols, "price"]
+    for col in df_full.select_dtypes(include="float").columns:
+        if col in SCI_COLS:
+            continue
+        df_full[col] = df_full[col].round(2 if col in two_dp else 4)
 
     # 2) Export to Excel with styling
     out_dir = OUTPUT_DIR / universe
@@ -177,11 +185,11 @@ def main() -> None:  # pragma: no-cover
 
     # Define minimal output columns in desired order
     # ---- build minimal preview ----
-    final_cols = ["ROBUST_SCORE", "HQM_SCORE", "DOLLAR_VOLUME", "TURNOVER_RATIO", "price"]
-    preview_cols = ["sector", "sector_rank"] + final_cols
+    preview_metric_cols = ["ROBUST_SCORE", "HQM_SCORE", "DOLLAR_VOLUME", "TURNOVER_RATIO", "price"]
+    preview_cols = ["sector", "sector_rank"] + preview_metric_cols
 
     out = (
-        df.sort_values("HQM_SCORE", ascending=False)
+        df.sort_values("ROBUST_SCORE", ascending=False)
         .reset_index(names="tkr")
         .loc[:, ["tkr"] + preview_cols]
         .head(20)

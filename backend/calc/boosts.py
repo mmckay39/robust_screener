@@ -25,7 +25,7 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 
-from core.helpers import slope_uniform
+from calc.stats import slope_uniform
 
 __all__ = [
     "ebit_boost",

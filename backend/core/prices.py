@@ -1,8 +1,8 @@
 # core/prices.py
 from datetime import time as dtime
 import os, pandas as pd, pytz
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
-import time  # ✅ this one gives you perf_counter()
 
 from core.cache import cached_get_json   # already exist
 from core.paths import PRICES_DIR
@@ -12,6 +12,8 @@ FMP_API_KEY = os.getenv("FMP_API_KEY")
 
 OUT_DIR = PRICES_DIR
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+FETCH_WORKERS = 2   # symbols in flight; core/cache.py caps total calls/minute at 250
 
 # ──────────────────────────────────────────────────────────────
 def _load_prices(universe: str) -> pd.DataFrame:
@@ -81,7 +83,7 @@ def _fetch_missing_days(symbol: str, start: str, end: str) -> list[dict]:
         f"?symbol={symbol}&from={start}&to={end}&apikey={FMP_API_KEY}"
     )
     # print(f"Fetching prices for {symbol} from {start} to {end}")  # DEBUG
-    bars = cached_get_json(url)
+    bars = cached_get_json(url) or []
     if not bars:
             print(f"⚠️ No price data returned for {symbol}")  # DEBUG
     return [
@@ -139,17 +141,12 @@ def update_universe(universe: str, symbols: list[str]) -> pd.DataFrame:
     # -------------------------------------------------------------------
     new_rows: list[dict] = []
 
+    # Jobs: (symbol, from, to)
     # 2a. completely new tickers → full history
-    loop = tqdm(missing_tickers, desc="🔄 Fetching new symbols", unit="tick")
-    for sym in loop:
-        start = time.perf_counter()
-        new_rows += _fetch_missing_days(
-            sym,
-            start_date.strftime("%Y-%m-%d"),
-            end_date.strftime("%Y-%m-%d")
-        )
-        elapsed = time.perf_counter() - start
-        loop.set_postfix_str(f"{sym} ({elapsed:.2f}s)")
+    jobs = [
+        (sym, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+        for sym in missing_tickers
+    ]
 
     # 2b. old tickers with date holes → recent gap only
     if not date_gaps.empty:
@@ -157,25 +154,19 @@ def update_universe(universe: str, symbols: list[str]) -> pd.DataFrame:
             f"🔄 {universe}: fetching {len(date_gaps)} missing days "
             f"{date_gaps[0].date()}→{date_gaps[-1].date()}"
         )
-
-        loop = tqdm(symbols_norm, desc="🔄 Filling date gaps", unit="tick")
-        for sym in loop:
-            if sym in missing_tickers:
-                continue
-
-            start = time.perf_counter()
-            try:
-                new_rows += _fetch_missing_days(
-                    sym,
-                    date_gaps[0].strftime("%Y-%m-%d"),
-                    date_gaps[-1].strftime("%Y-%m-%d")
-                )
-            except IndexError:
-                print(f"⚠️ Skipped {sym} — date_gaps unexpectedly empty.")
-            elapsed = time.perf_counter() - start
-            loop.set_postfix_str(f"{sym} ({elapsed:.2f}s)")
+        missing_set = set(missing_tickers)
+        jobs += [
+            (sym, date_gaps[0].strftime("%Y-%m-%d"), date_gaps[-1].strftime("%Y-%m-%d"))
+            for sym in sorted(symbols_norm) if sym not in missing_set
+        ]
     else:
         print(f"✅ No date gaps detected for {universe}.")
+
+    # run all jobs FETCH_WORKERS at a time; the shared limiter in core/cache.py caps the rate
+    with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
+        futures = [pool.submit(_fetch_missing_days, *job) for job in jobs]
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="🔄 Fetching OHLC", unit="tick"):
+            new_rows += fut.result()
 
     # ---------- Merge & write ----------
     if new_rows:
