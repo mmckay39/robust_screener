@@ -1,10 +1,8 @@
 from __future__ import annotations
-from time import sleep, time as now
 import numpy as np
 import pandas as pd
-from typing import Sequence, Iterable, Union, List
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Sequence, Iterable, Union
+from datetime import datetime, timezone
 
 from core.fetchers import fetch_history
 
@@ -71,22 +69,6 @@ def slope_uniform(y: Sequence[Number]) -> float | None:
     return linear_slope(x_arr, y_arr)          # <-- existing 2‑arg helper
 
 #-----------------------------------------------------------------------------------------------------------------#
-# ------------------------------------------------------------------ #
-# 3. Z‑score (vectorised)                                            #
-# ------------------------------------------------------------------ #
-def z_score(arr: Sequence[Number], ddof: int = 0) -> np.ndarray:
-    """
-    Vectorised z‑score: (x - mean) / std.
-    • Returns zeros when std == 0 to avoid NaNs.
-    • Accepts list, numpy array, or pandas Series.
-    """
-    vals = np.asarray(arr, dtype="float64")
-    mu = vals.mean()
-    sigma = vals.std(ddof=ddof)
-    if sigma == 0:
-        return np.zeros_like(vals)
-    return (vals - mu) / sigma
-
 # Format DOLLAR_VOLUME and TURNOVER_RATIO in scientific notation with 4 sig figs
 def format_sci_4sf(x):
     return f"{x:.3e}" if pd.notna(x) else ""

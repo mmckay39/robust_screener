@@ -6,9 +6,7 @@ HQM (High‑Quality Momentum) score + liquidity stats.
 • NOT folded into ROBUST_SCORE
 """
 import numpy as np, pandas as pd
-from scipy import stats
 from typing import Iterable
-import os
 
 # ---------------- helpers ----------------
 def _return(series: pd.Series, days: int) -> float | None:

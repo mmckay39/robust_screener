@@ -8,8 +8,8 @@ if not FMP_API_KEY:
     raise EnvironmentError("❌ Missing FMP_API_KEY environment variable")
 
 from core.cache import cached_get_json
-from datetime import datetime, timedelta, timezone
-from typing import Iterable, Mapping, Literal, List
+from datetime import datetime, timezone
+from typing import Iterable, Mapping, Literal
 
 import pandas as pd
 
@@ -161,9 +161,6 @@ def fetch_ttm(
     return {field: latest.get(field) for field in fields}
 
 #-----------------------------------------------------------------------------------------------------------------#
-from typing import Iterable, Literal
-from core.cache import cached_get_json
-
 def fetch_single(
     endpoint: str,
     ticker: str,
@@ -204,45 +201,3 @@ def fetch_single(
     if fields is None:
         return dict(latest)
     return {field: latest.get(field) for field in fields}
-
-
-def fetch_prices(symbols: List[str], start: str, end: str) -> pd.DataFrame:
-
-    """pull daily bars for each symbol via individual calls.
-    Returns a tidy DataFrame with date, ticker, close, volume.
-    """
-
-    records = []
-    for idx, sym in enumerate(symbols, 1):
-        bars = None
-        for base in FMP_DOMAINS:  # try /api/v3 then /stable
-            url = (
-                f"{base}/historical-price-eod/full"
-                f"?symbol={sym}&from={start}&to={end}&apikey={FMP_API_KEY}"
-            )
-            resp = cached_get_json(url)
-            if isinstance(resp, list) and resp:  # success
-                bars = resp
-                break
-
-        if not bars:
-            print(f"⚠️  {sym}: no data returned")
-            continue
-
-        for bar in bars:
-            records.append(
-                {
-                    "date":   bar["date"],
-                    "ticker": sym,
-                    "close":  bar["close"],
-                    "volume": bar["volume"],
-                }
-            )
-
-        # if idx % 25 == 0 or idx == len(symbols):
-        #     print(f"Fetched {idx}/{len(symbols)} symbols …")
-
-    df = pd.DataFrame(records)
-    if not df.empty and "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
-    return df

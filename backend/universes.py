@@ -1,7 +1,6 @@
 import requests, pandas as pd, re
 from io import StringIO
 from core.cache import cached_get_json
-from bs4 import BeautifulSoup
 
 from dotenv import load_dotenv
 load_dotenv()  # loads from .env file in project root

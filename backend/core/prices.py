@@ -1,8 +1,6 @@
 # core/prices.py
-from pathlib import Path
 from datetime import time as dtime
-from typing import List
-import os, pandas as pd, pytz, requests
+import os, pandas as pd, pytz
 from tqdm import tqdm
 import time  # ✅ this one gives you perf_counter()
 
@@ -16,21 +14,6 @@ OUT_DIR = PRICES_DIR
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ──────────────────────────────────────────────────────────────
-def save_prices(df: pd.DataFrame, universe: str) -> pd.DataFrame:
-    """Persist OHLCV parquet/csv and return MultiIndex (date,ticker)."""
-    pq_path  = OUT_DIR / f"{universe}_ohlcv.parquet"
-    csv_path = OUT_DIR / f"{universe}_ohlcv.csv"
-
-    df = df.copy()
-    df.columns = df.columns.str.lower()
-    df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
-    df = df.sort_values(["date", "ticker"]).reset_index(drop=True)
-
-    df.to_parquet(pq_path, compression="snappy", engine="pyarrow", index=False)
-    df.to_csv(csv_path, index=False)
-    print(f"✔️  Saved {len(df):,} rows → {pq_path}")
-    return df.set_index(["date", "ticker"])
-
 def _load_prices(universe: str) -> pd.DataFrame:
     path = OUT_DIR / f"{universe}_ohlcv.parquet"
     csv_path = OUT_DIR / f"{universe}_ohlcv.csv"
@@ -157,7 +140,7 @@ def update_universe(universe: str, symbols: list[str]) -> pd.DataFrame:
     new_rows: list[dict] = []
 
     # 2a. completely new tickers → full history
-    loop = tqdm(missing_tickers, desc=f"🔄 Fetching new symbols", unit="tick")
+    loop = tqdm(missing_tickers, desc="🔄 Fetching new symbols", unit="tick")
     for sym in loop:
         start = time.perf_counter()
         new_rows += _fetch_missing_days(

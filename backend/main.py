@@ -1,16 +1,12 @@
 # ── main ─────────────────────────────────────────────────────────────────────
 import argparse
 import sys
-from pathlib import Path
 import numpy as np
 import pandas as pd
-from openpyxl.styles import Font, PatternFill
-from core.prices import update_universe, _load_prices
+from core.prices import update_universe
 from metrics.hqm import build_hqm
-import os
-from core.helpers import format_sci_4sf
 
-from metrics.run_metrics import fetch_row, build_universe_df
+from metrics.run_metrics import build_universe_df
 from metrics.value_quality import add_value_quality_metrics
 from calc.rank import add_ranks, FINAL_ORDER
 from core.fundamentals_cache import load_cached
@@ -31,7 +27,7 @@ try:
 except ImportError as err:  # pragma: no-cover
     sys.exit(f"❌  universes.py missing or broken – {err}")
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 # e.g. “20250606_143022” for YYYYMMDD_HHMMSS
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")

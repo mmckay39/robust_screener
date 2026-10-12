@@ -33,7 +33,6 @@ from core.fetchers import (
     fetch_single,           # single-object endpoints (quote-short, enterprise-values, …)
     fetch_history,        # quarterly / annual statements
     fetch_analyst_estimates,# forward EPS
-    fetch_prices,
 )
 from calc.ttm import calc_ttm
 from metrics.value_quality import add_value_quality_metrics
@@ -58,10 +57,7 @@ from core.helpers import (
     
 )
 
-from tqdm import tqdm
-from typing import List
 import pandas as pd
-import numpy as np
 
 # ── configuration ────────────────────────────────────────────────────────────
 # fields we want to pull from income-statement endpoint

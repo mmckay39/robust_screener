@@ -1,12 +1,9 @@
 # core/fundamentals_cache.py
-from pathlib import Path
-import os, pandas as pd, requests, datetime as dt
+import os, pandas as pd
 from dotenv import load_dotenv
 from tqdm import tqdm
-from datetime import datetime, timezone
 load_dotenv()
 import pytz
-from datetime import timedelta
 import time
 FMP_API_KEY = os.getenv("FMP_API_KEY")
 
