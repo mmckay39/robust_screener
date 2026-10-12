@@ -36,8 +36,8 @@ from datetime import datetime, timezone
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 # HQM settings ---------------------------------------
-rank_days = [3, 8, 17, 36]     # <- Modify HQM Return Windows here
-screen_days = 36
+rank_days = [3, 14, 35, 70]     # <- Modify HQM Return Windows here
+screen_days = 70
 def _parse_args() -> str:
     parser = argparse.ArgumentParser(description="Fetch TTM & valuation metrics")
     parser.add_argument(
