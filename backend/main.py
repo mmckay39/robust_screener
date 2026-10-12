@@ -14,6 +14,7 @@ from metrics.run_metrics import fetch_row, build_universe_df
 from metrics.value_quality import add_value_quality_metrics
 from calc.rank import add_ranks, FINAL_ORDER
 from core.fundamentals_cache import load_cached
+from core.paths import FUNDAMENTALS_DIR, OUTPUT_DIR
 # from core.fundamentals_cache import refresh_if_needed
 # choose your TTL here (days). Set to 10 for your requirement.
 FUND_TTL_DAYS = 10
@@ -74,7 +75,7 @@ def main() -> None:  # pragma: no-cover
     # load or create fundamentals dataframe
     df_fundamantals = load_cached(universe)
     
-    fundamentals_path = Path(f"data/fundamentals/{universe}_fundamentals.parquet")
+    fundamentals_path = FUNDAMENTALS_DIR / f"{universe}_fundamentals.parquet"
     print(f"📂 Fundamentals cache path → {fundamentals_path}")
 
     # If cache is missing/corrupt, rebuild fundamentals now and continue.
@@ -163,7 +164,8 @@ def main() -> None:  # pragma: no-cover
             df[col] = df[col].round(2)
 
     # 2) Export to Excel with styling
-    excel_path = Path(f"data/{universe}_metrics_{ts}.xlsx")
+    out_dir = OUTPUT_DIR / universe
+    excel_path = out_dir / f"{universe}_metrics_{ts}.xlsx"
     excel_path.parent.mkdir(parents=True, exist_ok=True)
     export_to_excel(df_full, excel_path)
 
@@ -211,7 +213,7 @@ def main() -> None:  # pragma: no-cover
         print(out.to_markdown(index=False))
 
     # ─ Save to disk for downstream screener if you like ───────────────────────
-    outpath = Path("data/metrics_raw.parquet")
+    outpath = OUTPUT_DIR / universe / "metrics_raw.parquet"
     outpath.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(outpath)
     print(f"\n✅  Saved raw metrics → {outpath}")

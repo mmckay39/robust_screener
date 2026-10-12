@@ -7,13 +7,15 @@ import hashlib
 import pathlib
 import requests
 
+from core.paths import CACHE_DIR
+
 # ------------------------------------------------------------ #
 # 1. Configuration:                                          #
 # ------------------------------------------------------------ #
 
 # Where on disk we store cached JSON files
-_CACHE_DIR = pathlib.Path(".cache_fmp")  
-_CACHE_DIR.mkdir(exist_ok=True)
+_CACHE_DIR = CACHE_DIR
+_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # How many seconds a cached file remains “fresh” before we re-download it
 # (e.g., 3600 = 1 hour; set to a larger value if you don’t need intraday accuracy)

@@ -1,5 +1,7 @@
 .cache_fmp/
+/data/
 backend/data/
+backend/output/
 .env
 *.log
 *.xlsx

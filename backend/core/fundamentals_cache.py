@@ -10,7 +10,8 @@ from datetime import timedelta
 import time
 FMP_API_KEY = os.getenv("FMP_API_KEY")
 
-FUND_DIR = Path("data/fundamentals")
+from core.paths import FUNDAMENTALS_DIR
+FUND_DIR = FUNDAMENTALS_DIR
 FUND_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------- cache API --------------

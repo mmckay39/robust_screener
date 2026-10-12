@@ -7,11 +7,12 @@ from tqdm import tqdm
 import time  # ✅ this one gives you perf_counter()
 
 from core.cache import cached_get_json   # already exist
+from core.paths import PRICES_DIR
 from dotenv import load_dotenv
 load_dotenv()
 FMP_API_KEY = os.getenv("FMP_API_KEY")
 
-OUT_DIR = Path("data/prices")          # central spot for OHLCV
+OUT_DIR = PRICES_DIR
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ──────────────────────────────────────────────────────────────
