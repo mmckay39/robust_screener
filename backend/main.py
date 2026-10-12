@@ -9,11 +9,7 @@ from metrics.hqm import build_hqm
 from metrics.run_metrics import build_universe_df
 from metrics.value_quality import add_value_quality_metrics
 from calc.rank import add_ranks, FINAL_ORDER
-from core.fundamentals_cache import load_cached
-from core.paths import FUNDAMENTALS_DIR, OUTPUT_DIR
-# from core.fundamentals_cache import refresh_if_needed
-# choose your TTL here (days). Set to 10 for your requirement.
-FUND_TTL_DAYS = 10
+from core.paths import OUTPUT_DIR
 from core.excel_export import export_to_excel
 
 try:
@@ -68,20 +64,9 @@ def main() -> None:  # pragma: no-cover
     price_mi = price_mi.drop(columns=["open", "high", "low"], errors="ignore")
     # price_mi = _load_prices(universe)
 
-    # load or create fundamentals dataframe
-    df_fundamantals = load_cached(universe)
-    
-    fundamentals_path = FUNDAMENTALS_DIR / f"{universe}_fundamentals.parquet"
-    print(f"📂 Fundamentals cache path → {fundamentals_path}")
-
-    # If cache is missing/corrupt, rebuild fundamentals now and continue.
-    if df_fundamantals is None:
-        print("🧰 No cached fundamentals. Rebuilding now…")
-        # build_universe_df uses refresh_if_needed under the hood and saves the cache
-        df_fundamantals = build_universe_df(symbols, universe, price_mi)
-        # ensure index=ticker for the rest of main()
-        if "ticker" in df_fundamantals.columns:
-            df_fundamantals = df_fundamantals.set_index("ticker")
+    # ── ➋ Fundamentals: refresh stale tickers (TTL) and fetch new ones ──
+    df_fundamantals = build_universe_df(symbols, universe, price_mi)
+    # ensure index=ticker for the rest of main()
     # print("\nDataFrame structure:")
     # print(f"Index: {df.index.name}")
     # print(f"Columns: {df.columns.tolist()}")

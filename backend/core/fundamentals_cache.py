@@ -13,17 +13,15 @@ FUND_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------- cache API --------------
 def load_cached(universe: str) -> pd.DataFrame | None:
+    """Raw cache table with 'ticker' as a column (refresh_if_needed relies on this)."""
     path = FUND_DIR / f"{universe}_fundamentals.parquet"
-    if path.exists():
-        df = pd.read_parquet(path)
-        if "ticker" in df.columns:
-            return df.set_index("ticker")
-        elif "ticker" in df.index.names:
-            return df
-        else:
-            print(f"⚠️ 'ticker' not found in {path.name}; file may be corrupt.")
-            return None
-    return None
+    if not path.exists():
+        return None
+    df = pd.read_parquet(path)
+    if "ticker" not in df.columns:
+        print(f"⚠️ 'ticker' not found in {path.name}; file may be corrupt.")
+        return None
+    return df
 
 def save_cached(df: pd.DataFrame, universe: str):
     path = FUND_DIR / f"{universe}_fundamentals.parquet"
@@ -107,6 +105,8 @@ def refresh_if_needed(
         cached = cached[~cached["ticker"].isin(stale)]
         cached = pd.concat([cached, fresh_df], ignore_index=True)
 
-    save_cached(cached,universe)
+    # drop tickers no longer in the universe, then persist
+    cached = cached[cached["ticker"].isin(symbols)].copy()
+    save_cached(cached, universe)
     return cached
 
