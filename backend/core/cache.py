@@ -25,8 +25,8 @@ DEFAULT_TTL = 86400
 # 86_400      # 1 day
 # 2_592_000   # 30 days (≈ 1 month)
 
-# Ensure we don’t exceed ~250 requests/minute → sleep between calls
-MAX_REQUESTS_PER_MINUTE = 250
+# Ensure we don’t exceed ~275 requests/minute → sleep between calls
+MAX_REQUESTS_PER_MINUTE = 275
 _SLEEP_SEC = 60.0 / MAX_REQUESTS_PER_MINUTE
 # _SLEEP_SEC = 60.0 / 1200
 # _SLEEP_SEC = 0

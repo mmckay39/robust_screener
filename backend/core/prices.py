@@ -13,7 +13,7 @@ FMP_API_KEY = os.getenv("FMP_API_KEY")
 OUT_DIR = PRICES_DIR
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-FETCH_WORKERS = 2   # symbols in flight; core/cache.py caps total calls/minute at 250
+FETCH_WORKERS = 4   # symbols in flight; core/cache.py caps total calls/minute at 275
 
 # ──────────────────────────────────────────────────────────────
 def _load_prices(universe: str) -> pd.DataFrame:
@@ -84,8 +84,6 @@ def _fetch_missing_days(symbol: str, start: str, end: str) -> list[dict]:
     )
     # print(f"Fetching prices for {symbol} from {start} to {end}")  # DEBUG
     bars = cached_get_json(url) or []
-    if not bars:
-            print(f"⚠️ No price data returned for {symbol}")  # DEBUG
     return [
         {"date": bar["date"], "ticker": symbol,
         "close": bar["close"], "volume": bar["volume"]}
@@ -165,7 +163,7 @@ def update_universe(universe: str, symbols: list[str]) -> pd.DataFrame:
     # run all jobs FETCH_WORKERS at a time; the shared limiter in core/cache.py caps the rate
     with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
         futures = [pool.submit(_fetch_missing_days, *job) for job in jobs]
-        for fut in tqdm(as_completed(futures), total=len(futures), desc="🔄 Fetching OHLC", unit="tick"):
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="🔄 Fetching OHLC", unit="tick", position=0, leave=True):
             new_rows += fut.result()
 
     # ---------- Merge & write ----------
@@ -189,6 +187,4 @@ def update_universe(universe: str, symbols: list[str]) -> pd.DataFrame:
     )
     df_all.to_csv(out_path.with_suffix(".csv"), index=False)
 
-    print(f"✅ {universe}: added {len(new_rows)} rows; "
-          f"{len(df_all['ticker'].unique())} tickers total")
     return df_all.set_index(["date", "ticker"])

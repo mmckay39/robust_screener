@@ -73,6 +73,7 @@ def main() -> None:  # pragma: no-cover
 
     # earnings-yield boost needs both the EPS history (fundamentals) and prices
     df_fundamantals = add_earnings_yield_boost(df_fundamantals, price_mi)
+    missing_fund = [s for s in symbols if s not in df_fundamantals.index]
     # ensure index=ticker for the rest of main()
     # print("\nDataFrame structure:")
     # print(f"Index: {df.index.name}")
@@ -87,9 +88,6 @@ def main() -> None:  # pragma: no-cover
     tickers_in_prices = price_mi.index.get_level_values("ticker").unique()
     valid_tickers = df_fundamantals.index.intersection(tickers_in_prices)
     missing_tickers = df_fundamantals.index.difference(tickers_in_prices)
-
-    if not missing_tickers.empty:
-        print(f"⚠️ Warning: {len(missing_tickers)} tickers missing price data: {list(missing_tickers[:5])}...")
 
     # Safely slice only valid tickers
     price_mi = price_mi.loc[pd.IndexSlice[:, valid_tickers], :]
@@ -117,13 +115,6 @@ def main() -> None:  # pragma: no-cover
     df.rename(columns=rename_map, inplace=True)    
 
     pct_HQM_cols = list(rename_map.values())      
-
-    print("\n🧪 Sector check:")
-    for sec, group in df.groupby("sector"):
-        avg_val = group["VALUE_SCORE"].mean()
-        avg_qual = group["QUALITY_SCORE"].mean()
-        avg_robust = group["ROBUST_SCORE"].mean()
-        print(f"{sec:<25} → V:{avg_val:.3f}, Q:{avg_qual:.3f}, R:{avg_robust:.3f}")
 
     # rank each ticker _within its sector_ by HQM Score
     df["sector_rank"] = (
@@ -158,46 +149,21 @@ def main() -> None:  # pragma: no-cover
     excel_path.parent.mkdir(parents=True, exist_ok=True)
     export_to_excel(df_full, excel_path)
 
-    # Ensure we keep only columns that actually exist (some tickers may miss data)
-    # ─ Focused coverage report (only metrics in FINAL_ORDER) ──────────────────
-    final_cols = [c for c in FINAL_ORDER if c in df.columns]
-
-    # 1) Percent non‑null for just those columns
-    cov_final = (1 - df[final_cols].isna().mean()).loc[final_cols]
-
-    print("\nData coverage for final metrics (ordered):")
-    print(cov_final.to_string(float_format="{:.1%}".format))
-
-    # 2) Which tickers are missing each metric (<100 % coverage)?
-    missing_info = {
-        col: df.index[df[col].isna()].tolist()
-        for col, pct in cov_final.items()
-        if pct < 1.0
-    }
-
-    if missing_info:
-        print("\nFields with missing data:")
-        for col, tkrs in missing_info.items():
-            pct = cov_final[col]
-            print(f"  • {col} ({pct:.1%} coverage) → missing: {tkrs}")
-    else:
-        print("\n✅ All final‑metric columns are 100 % complete among selected tickers.")
-
-    # Define minimal output columns in desired order
-    # ---- build minimal preview ----
-    preview_metric_cols = ["ROBUST_SCORE", "HQM_SCORE", "DOLLAR_VOLUME", "TURNOVER_RATIO", "price"]
-    preview_cols = ["sector", "sector_rank"] + preview_metric_cols
-
+    # ---- terminal preview: top 20 by HQM Score ----
+    preview_cols = ["sector", "sector_rank", "HQM_SCORE", "ROBUST_SCORE", "DOLLAR_VOLUME", "TURNOVER_RATIO", "price"]
     out = (
-        df.sort_values("ROBUST_SCORE", ascending=False)
+        df.sort_values("HQM_SCORE", ascending=False)
         .reset_index(names="tkr")
         .loc[:, ["tkr"] + preview_cols]
         .head(20)
         .reset_index(drop=True)
     )
     out.insert(0, "rank", np.arange(1, len(out) + 1))
+    out["DOLLAR_VOLUME"] = out["DOLLAR_VOLUME"].map(lambda v: f"{v:.3e}")
+    out["TURNOVER_RATIO"] = out["TURNOVER_RATIO"].map(lambda v: f"{v:.3e}")
+    out[["HQM_SCORE", "ROBUST_SCORE"]] = out[["HQM_SCORE", "ROBUST_SCORE"]].round(4)
 
-    print("\nTop‑20 by ROBUST_SCORE:")
+    print("\nTop‑20 by HQM_SCORE:")
     with pd.option_context("display.max_columns", None, "display.width", 160):
         print(out.to_markdown(index=False))
 
@@ -206,6 +172,20 @@ def main() -> None:  # pragma: no-cover
     outpath.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(outpath)
     print(f"\n✅  Saved raw metrics → {outpath}")
+
+    # ─ End-of-run summary ─────────────────────────────────────────────────
+    print(f"\nData gaps: {len(missing_tickers)} without price history · {len(missing_fund)} without fundamentals")
+    backups = (
+        df_fundamantals.get("backups_used", pd.Series(dtype=object))
+        .fillna("").astype(str)
+        .str.split(";").explode()
+    )
+    backups = backups[backups != ""].value_counts()
+    print("\nBackups used (times per field):")
+    if backups.empty:
+        print("  none")
+    for field, n in backups.items():
+        print(f"  {field:<32} {n}")
 
 if __name__ == "__main__":
     main()

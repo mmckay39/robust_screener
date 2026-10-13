@@ -158,6 +158,8 @@ def fetch_row(tkr: str) -> dict[str, float | None]:
     """
     Collect all metrics for *one* ticker and return a row-dict.
     """
+    backups_used: list[str] = []  # fields that fell back to a backup value (counted in main.py)
+
     # Direct TTM pulls
     # --- key-metrics-ttm ------------------------------------------------
     k_m_ttm = fetch_ttm("key-metrics-ttm", tkr, KEY_METRIC_TTM_FIELDS) # "evToEBITDATTM", "freeCashFlowYieldTTM", "evToSalesTTM", "returnOnInvestedCapitalTTM"
@@ -185,7 +187,9 @@ def fetch_row(tkr: str) -> dict[str, float | None]:
     bs_q = fetch_history("balance-sheet-statement", tkr, "quarter", 7)
 
     # --- price, forward EPS, enterprise value --------------------------------    
-    price            = fetch_single("quote-short", tkr, ["price"]).get("price") # price ✅
+    # profile carries price too (matches quote-short to <0.03%), so one call covers price, sector and industry
+    profile          = fetch_single("profile", tkr, ["sector", "industry", "price"])
+    price            = profile.get("price")
     eps_avg          = fetch_analyst_estimates(tkr, ["epsAvg"]).get("epsAvg") # epsAvg works ✅, did 2025 in a list of future past
     # enterprise_value = fetch_single("enterprise-values", tkr, ["enterpriseValue"]).get("enterpriseValue") #enterpriseValue
     # total_assets     = fetch_single("balance-sheet-statement", tkr, ["totalAssets"]).get("totalAssets") # totalAssets
@@ -198,8 +202,6 @@ def fetch_row(tkr: str) -> dict[str, float | None]:
     eps_keep = [c for c in ["date", "eps", "symbol", "period"] if i_s is not None and c in i_s.columns]
     eps_history = i_s[eps_keep].to_json(orient="records", date_format="iso") if eps_keep and not i_s.empty else None
 
-    # ── add sector & industry from the “profile” endpoint ─────────────────────
-    profile = fetch_single("profile", tkr, ["sector", "industry"])
 
     #-------------------------------------------------------------------------------------------------------------#
     #--------------------------------------------------- Fallbacks------------------------------------------------#
@@ -219,7 +221,7 @@ def fetch_row(tkr: str) -> dict[str, float | None]:
                 eps_ttm_manual = netIncomeTTM / weightedAverageShsOutDil
                 if eps_ttm_manual != 0:
                     priceToEarningsRatioTTM = price / eps_ttm_manual
-                    print("\nUsed fallback for priceToEarningsRatioTTM: price / (netIncomeTTM / weightedAverageShsOutDil)")
+                    backups_used.append("priceToEarningsRatioTTM")
             except ZeroDivisionError:
                 pass
 
@@ -234,7 +236,7 @@ def fetch_row(tkr: str) -> dict[str, float | None]:
                 pe = df_ratios_annual.iloc[0]["priceToEarningsRatio"]
                 if isinstance(pe, (int, float)) and pe != 0:
                     priceToEarningsRatioTTM = pe
-                    print(f"Used annual‐ratios fallback for priceToEarningsRatioTTM: {pe}")
+                    backups_used.append("priceToEarningsRatioTTM")
 
     # --------key-metrics-ttm fallbacks-----------------#
     # if any(k_m_ttm.get(field) in (None, 0) for field in KEY_METRIC_TTM_FIELDS): # if anything from key-metrics-ttm is missing
@@ -245,37 +247,42 @@ def fetch_row(tkr: str) -> dict[str, float | None]:
     if evToEBITDATTM in (None, 0) and enterprise_value not in (None, 0) and i_s_ttm_calc.get("ebitda") not in (None, 0): #if not there
         ebitdaTTM = i_s_ttm_calc.get("ebitda") # get from income-statement endpoint calc ttm
         evToEBITDATTM = enterprise_value/ebitdaTTM
-        print("\nUsed fallback for evToEBITDATTM")
+        backups_used.append("evToEBITDATTM")
 
     if evToEBITDATTM in (None, 0) and k_m_annual is not None and not k_m_annual.empty:
-        evToEBITDATTM  = annual_fallback(k_m_annual, "evToEBITDA", evToEBITDATTM)             
-        
+        evToEBITDATTM  = annual_fallback(k_m_annual, "evToEBITDA", evToEBITDATTM)
+        if evToEBITDATTM not in (None, 0):
+            backups_used.append("evToEBITDATTM")
     # --- ROIC fallback -----------------------------------------------
     if returnOnInvestedCapitalTTM in (None, 0):
         returnOnInvestedCapitalTTM = compute_roic_ttm(i_s, bs_q) # special function for manual roic ttm calc
-        print("\nUsed fallback for returnOnInvestedCapitalTTM")
+        if returnOnInvestedCapitalTTM not in (None, 0):
+            backups_used.append("returnOnInvestedCapitalTTM")
     
     if returnOnInvestedCapitalTTM in (None, 0) and k_m_annual is not None and not k_m_annual.empty:
-        returnOnInvestedCapitalTTM  = annual_fallback(k_m_annual, "returnOnInvestedCapital", returnOnInvestedCapitalTTM)      
-    
+        returnOnInvestedCapitalTTM  = annual_fallback(k_m_annual, "returnOnInvestedCapital", returnOnInvestedCapitalTTM)
+        if returnOnInvestedCapitalTTM not in (None, 0):
+            backups_used.append("returnOnInvestedCapitalTTM")
     # --- freeCashFlowYieldTTM fallback -----------------------------------------------    
     if freeCashFlowYieldTTM in (None, 0):
         # get from special function for manual fcf yield calc
         freeCashFlowYieldTTM = compute_fcf_yield_ttm(c_f_s, i_s, price)
-        print("\nUsed fallback for freeCashFlowYieldTTM")
+        if freeCashFlowYieldTTM not in (None, 0):
+            backups_used.append("freeCashFlowYieldTTM")
 
     
     if freeCashFlowYieldTTM in (None, 0) and k_m_annual is not None and not k_m_annual.empty:
-        freeCashFlowYieldTTM  = annual_fallback(k_m_annual, "freeCashFlowYield", freeCashFlowYieldTTM)   
-
-
+        freeCashFlowYieldTTM  = annual_fallback(k_m_annual, "freeCashFlowYield", freeCashFlowYieldTTM)
+        if freeCashFlowYieldTTM not in (None, 0):
+            backups_used.append("freeCashFlowYieldTTM")
     # --- evToSalesTTM  -----------------------------------------------
     evToSalesTTM = try_fallbacks(
         k_m_ttm.get("evToSalesTTM"),
         compute_ev_to_sales_ttm(i_s, bs_q, price),
         annual_fallback(k_m_annual, "evToSales", None) if k_m_annual is not None and not k_m_annual.empty else None,
-        verbose_name="evToSalesTTM"
-)
+    )
+    if evToSalesTTM not in (None, 0) and k_m_ttm.get("evToSalesTTM") in (None, 0):
+        backups_used.append("evToSalesTTM")
 
     #-----------operatingProfitMarginTTM fallback------------#
     
@@ -285,6 +292,7 @@ def fetch_row(tkr: str) -> dict[str, float | None]:
         den = last4["revenue"].sum()
         if den not in (None, 0):
             operatingProfitMarginTTM = num / den
+            backups_used.append("operatingProfitMarginTTM")
         
     o_p_m_quarter = quarterly_op_margin(i_s) # for op_margin_boost
     # ey__quarterly_df =  build_earnings_yield_df(i_s, tick_df)
@@ -293,6 +301,8 @@ def fetch_row(tkr: str) -> dict[str, float | None]:
     # fallback to quarterly if annual missing
     if fcf_cagr is None:
         fcf_cagr = fcf_cagr_boost(c_f_s)
+        if fcf_cagr is not None:
+            backups_used.append("fcf_cagr_boost")
 
     # ── slope‑boost inputs ───────────────────────────────────────
     boosts = {
@@ -347,6 +357,9 @@ def fetch_row(tkr: str) -> dict[str, float | None]:
 
         # quarterly EPS, used later by add_earnings_yield_boost
         "eps_history":                    eps_history,
+
+        # backup fields used for this ticker (summarised in main.py)
+        "backups_used":                   ";".join(backups_used),
     }
     # print(row)
     # Stamp with Eastern timestamps

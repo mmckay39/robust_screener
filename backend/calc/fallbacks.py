@@ -31,14 +31,11 @@ def annual_fallback(annual_df, field: str, ttm_value):
                 return annual_val
     return None
 
-def try_fallbacks(*attempts, verbose_name=None):
+def try_fallbacks(*attempts):
     """
     Return the first non-(None, 0) value in attempts.
-    Optionally prints which fallback succeeded.
     """
-    for idx, val in enumerate(attempts):
+    for val in attempts:
         if val not in (None, 0):
-            if verbose_name and idx > 0:  # print only if a fallback (not the first try)
-                print(f"Used fallback {idx} for {verbose_name}")
             return val
     return None

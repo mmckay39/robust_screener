@@ -30,7 +30,7 @@ def save_cached(df: pd.DataFrame, universe: str):
     df.to_parquet(path, index=False, compression="snappy")
 
 TTL_DAYS = 10            # ✏️  bump to whatever you like
-FETCH_WORKERS = 2        # tickers in flight; core/cache.py caps total calls/minute at 250
+FETCH_WORKERS = 4        # tickers in flight; core/cache.py caps total calls/minute at 275
 
 def refresh_if_needed(
     universe: str,
@@ -88,7 +88,7 @@ def refresh_if_needed(
         return data, time.perf_counter() - start
 
     results: dict[str, tuple[dict, float]] = {}
-    loop = tqdm(total=len(stale), desc="🔍 Fetching fundamental data", unit="tick")
+    loop = tqdm(total=len(stale), desc="🔍 Fetching fundamental data", unit="tick", position=1, leave=True)
     with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
         futures = {pool.submit(_timed_build, tkr): tkr for tkr in stale}
         for fut in as_completed(futures):
@@ -96,9 +96,8 @@ def refresh_if_needed(
             try:
                 results[tkr] = fut.result()
                 loop.set_postfix_str(f"{tkr} ({results[tkr][1]:.2f}s)")
-            except Exception as exc:
+            except Exception:
                 loop.set_postfix_str(f"{tkr} ❌")
-                print(f"⚠️  fundamentals fetch failed for {tkr}: {exc}")
             loop.update(1)
     loop.close()
 
