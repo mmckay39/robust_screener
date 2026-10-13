@@ -148,7 +148,7 @@ def download_NYSE():
 def download_IWM():
     iwm_url = (
         "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/"
-        "1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund"
+        "latest-holdings.csv"
     )
     iwm_text = requests.get(iwm_url, timeout=10).text
     iwm_df   = pd.read_csv(StringIO(iwm_text), skiprows=9)  # rows 0‑8 are headers
