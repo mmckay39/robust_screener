@@ -1,31 +1,28 @@
 # core/fundamentals_cache.py
-from pathlib import Path
-import os, pandas as pd, requests, datetime as dt
+import os, pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from tqdm import tqdm
-from datetime import datetime, timezone
 load_dotenv()
 import pytz
-from datetime import timedelta
 import time
 FMP_API_KEY = os.getenv("FMP_API_KEY")
 
-FUND_DIR = Path("data/fundamentals")
+from core.paths import FUNDAMENTALS_DIR
+FUND_DIR = FUNDAMENTALS_DIR
 FUND_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------- cache API --------------
 def load_cached(universe: str) -> pd.DataFrame | None:
+    """Raw cache table with 'ticker' as a column (refresh_if_needed relies on this)."""
     path = FUND_DIR / f"{universe}_fundamentals.parquet"
-    if path.exists():
-        df = pd.read_parquet(path)
-        if "ticker" in df.columns:
-            return df.set_index("ticker")
-        elif "ticker" in df.index.names:
-            return df
-        else:
-            print(f"⚠️ 'ticker' not found in {path.name}; file may be corrupt.")
-            return None
-    return None
+    if not path.exists():
+        return None
+    df = pd.read_parquet(path)
+    if "ticker" not in df.columns:
+        print(f"⚠️ 'ticker' not found in {path.name}; file may be corrupt.")
+        return None
+    return df
 
 def save_cached(df: pd.DataFrame, universe: str):
     path = FUND_DIR / f"{universe}_fundamentals.parquet"
@@ -33,6 +30,7 @@ def save_cached(df: pd.DataFrame, universe: str):
     df.to_parquet(path, index=False, compression="snappy")
 
 TTL_DAYS = 10            # ✏️  bump to whatever you like
+FETCH_WORKERS = 4        # tickers in flight; core/cache.py caps total calls/minute at 275
 
 def refresh_if_needed(
     universe: str,
@@ -83,25 +81,36 @@ def refresh_if_needed(
         if fetched_naive < cutoff:
             stale.append(tkr)
 
-    # ── (re‑)fetch stale tickers ──────────────────────────────────────
+    # ── (re‑)fetch stale tickers, FETCH_WORKERS at a time ─────────────
+    def _timed_build(tkr: str):
+        start = time.perf_counter()
+        data = build_row_fn(tkr)
+        return data, time.perf_counter() - start
+
+    results: dict[str, tuple[dict, float]] = {}
+    loop = tqdm(total=len(stale), desc="🔍 Fetching fundamental data", unit="tick", position=1, leave=True)
+    with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
+        futures = {pool.submit(_timed_build, tkr): tkr for tkr in stale}
+        for fut in as_completed(futures):
+            tkr = futures[fut]
+            try:
+                results[tkr] = fut.result()
+                loop.set_postfix_str(f"{tkr} ({results[tkr][1]:.2f}s)")
+            except Exception:
+                loop.set_postfix_str(f"{tkr} ❌")
+            loop.update(1)
+    loop.close()
+
+    # keep the original stale order so the cache file is deterministic
     new_rows: list[dict] = []
-    # print("🔄 Fetching fundamental data")
-    loop = tqdm(stale, desc="🔍 Fetching fundamental data", unit="tick")
-    for tkr in loop:
-        try:
-            start = time.perf_counter()
-            data = build_row_fn(tkr)
-            elapsed = time.perf_counter() - start
-
-            now_et = pd.Timestamp.now(tz=eastern)
-            data["fetched_at"]       = now_et.isoformat(timespec="seconds")
-            data["last_report_date"] = now_et.date().isoformat()
-            new_rows.append(data)
-
-            loop.set_postfix_str(f"{tkr} ({elapsed:.2f}s)")
-        except Exception as exc:
-            loop.set_postfix_str(f"{tkr} ❌")
-            print(f"⚠️  fundamentals fetch failed for {tkr}: {exc}")
+    now_et = pd.Timestamp.now(tz=eastern)
+    for tkr in stale:
+        if tkr not in results:
+            continue
+        data, _ = results[tkr]
+        data["fetched_at"]       = now_et.isoformat(timespec="seconds")
+        data["last_report_date"] = now_et.date().isoformat()
+        new_rows.append(data)
 
     if new_rows:
         fresh_df = pd.DataFrame(new_rows)
@@ -109,6 +118,8 @@ def refresh_if_needed(
         cached = cached[~cached["ticker"].isin(stale)]
         cached = pd.concat([cached, fresh_df], ignore_index=True)
 
-    save_cached(cached,universe)
+    # drop tickers no longer in the universe, then persist
+    cached = cached[cached["ticker"].isin(symbols)].copy()
+    save_cached(cached, universe)
     return cached
 

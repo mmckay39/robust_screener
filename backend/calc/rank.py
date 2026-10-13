@@ -1,13 +1,9 @@
 # rank.py  ────────────────────────────────────────────────────────────────────
 from __future__ import annotations
-import numpy as np
 import pandas as pd
 
 from calc.settings import (
-    VAL_STATIC_W,  VAL_TREND_W,
-    QUAL_STATIC_W, QUAL_ROIC_W, QUAL_OPM_W,
     GR_EBIT_W,     GR_REV_W,    GR_FCF_W,
-    FINAL_VAL_W,   FINAL_QUAL_W, FINAL_GR_W,
 )
 
 from calc.settings import (

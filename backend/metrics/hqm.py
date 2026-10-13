@@ -6,9 +6,7 @@ HQM (High‑Quality Momentum) score + liquidity stats.
 • NOT folded into ROBUST_SCORE
 """
 import numpy as np, pandas as pd
-from scipy import stats
 from typing import Iterable
-import os
 
 # ---------------- helpers ----------------
 def _return(series: pd.Series, days: int) -> float | None:
@@ -92,10 +90,14 @@ def build_hqm(
             row[f"{d}D"] = _return(frame["close"], d)
         rows.append(row)
 
+    empty = pd.DataFrame(columns=["ticker", "HQM_SCORE",
+                                  "DOLLAR_VOLUME", "TURNOVER_RATIO"])
+    if not rows:
+        return empty
+
     hqm = pd.DataFrame(rows).dropna(subset=[f"{d}D" for d in rank_days])
     if hqm.empty:
-        return pd.DataFrame(columns=["ticker", "HQM_SCORE",
-                                     "DOLLAR_VOLUME", "TURNOVER_RATIO"])
+        return empty
 
     # ── 2️⃣  Percentiles & composite score ────────────────────────────
     pct_cols = []

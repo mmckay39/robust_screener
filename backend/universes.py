@@ -1,7 +1,6 @@
 import requests, pandas as pd, re
 from io import StringIO
 from core.cache import cached_get_json
-from bs4 import BeautifulSoup
 
 from dotenv import load_dotenv
 load_dotenv()  # loads from .env file in project root
@@ -24,7 +23,7 @@ def download_precious_metals():
     
     for industry in INDUSTRIES:
         url = (
-            "https://financialmodelingprep.com/api/v3/stock-screener"
+            "https://financialmodelingprep.com/stable/company-screener"
             f"?industry={industry.replace(' ', '%20')}"
             f"&exchange={EXCHANGES}&limit=5000&apikey={FMP_API_KEY}"
         )
@@ -68,7 +67,7 @@ def download_SP500():
     resp.raise_for_status()
 
     # Parse the tables from the HTML text
-    sp500 = pd.read_html(resp.text)[0]
+    sp500 = pd.read_html(StringIO(resp.text))[0]
 
     sp500["Symbol"] = sp500["Symbol"].str.replace(".", "-")
     symbols_list = sp500["Symbol"].unique().tolist()

@@ -4,13 +4,15 @@ from pathlib import Path
 from openpyxl.styles import Font, PatternFill
 from pandas import ExcelWriter
 
+from calc.rank import VALUE_FACTORS, QUALITY_FACTORS, BOOST_COLS
+
+# Columns written in scientific notation. The cell stays numeric, so it still works in formulas.
+SCI_COLS = ["DOLLAR_VOLUME", "TURNOVER_RATIO"]
+SCI_FORMAT = "0.000E+00"
+
 HIDE_COLS = [
     "VALUE_SCORE_STATIC", "QUALITY_SCORE_STATIC",
-    "earnings_yield_boost", "ebit_boost", "fcf_cagr_boost", "revenue_boost",
-    "roic_boost", "op_margin_boost",
-    "trailing_earnings_yield", "forward_earnings_yield", "ev_ebit_yield",
-    "ev_ebitda_yield", "fcf_yield", "sales_yield", "roic", "gpa",
-    "accruals_ratio", "operating_profit_margin"
+    *BOOST_COLS, *VALUE_FACTORS, *QUALITY_FACTORS,
 ]
 
 def export_to_excel(df: pd.DataFrame, path: Path):
@@ -25,23 +27,12 @@ def export_to_excel(df: pd.DataFrame, path: Path):
         light_blue_fill = PatternFill("solid", fgColor="CCECFF")
         purple = Font(bold=True, color="800080")
         bold = Font(bold=True)
-        light_purple_fill = PatternFill("solid", fgColor="E6CCFF")
 
-        # -- COLUMN GROUPS --
-        group1 = [  # dark green font
-            "trailing_earnings_yield","forward_earnings_yield","ev_ebit_yield","ev_ebitda_yield","fcf_yield",
-            "sales_yield","roic","gpa","accruals_ratio","operating_profit_margin"
-        ]
-        group2 = [  # light green bg
-            "trailing_earnings_yield pct","forward_earnings_yield pct","ev_ebit_yield pct","ev_ebitda_yield pct",
-            "fcf_yield pct","sales_yield pct","roic pct","gpa pct","accruals_ratio pct","operating_profit_margin pct"
-        ]
-        group3 = [  # dark blue font
-            "earnings_yield_boost","ebit_boost","fcf_cagr_boost","revenue_boost","roic_boost","op_margin_boost"
-        ]
-        group4 = [  # light blue bg
-            "earnings_yield_boost_pct","ebit_boost_pct","fcf_cagr_boost_pct","revenue_boost_pct","roic_boost_pct","op_margin_boost_pct"
-        ]
+        # -- COLUMN GROUPS (derived from calc/rank.py so the export and scoring can't drift apart) --
+        group1 = [*VALUE_FACTORS, *QUALITY_FACTORS]                  # dark green font
+        group2 = [f"{c} pct" for c in group1]                        # light green bg
+        group3 = list(BOOST_COLS)                                    # dark blue font
+        group4 = [f"{c}_pct" for c in BOOST_COLS]                    # light blue bg
         group5 = ["HQM_SCORE", "DOLLAR_VOLUME", "TURNOVER_RATIO"]
 
         # Autofilter top row
@@ -59,7 +50,11 @@ def export_to_excel(df: pd.DataFrame, path: Path):
             if col_name in HIDE_COLS:
                 ws.column_dimensions[cell.column_letter].hidden = True
 
-            max_len = max(df[col_name].astype(str).map(len).max(), len(col_name)) + 2
+            if col_name in SCI_COLS:
+                for row in range(2, ws.max_row + 1):
+                    ws.cell(row=row, column=idx).number_format = SCI_FORMAT
+
+            max_len = max(df[col_name].map(lambda v: len(str(v))).max(), len(col_name)) + 2
             ws.column_dimensions[cell.column_letter].width = max_len
 
     print(f"✅ Saved full formatted Excel file → {path}")

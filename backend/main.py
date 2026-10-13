@@ -1,23 +1,17 @@
 # ── main ─────────────────────────────────────────────────────────────────────
 import argparse
 import sys
-from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
-from openpyxl.styles import Font, PatternFill
-from core.prices import update_universe, _load_prices
+from core.prices import update_universe
 from metrics.hqm import build_hqm
-import os
-from core.helpers import format_sci_4sf
 
-from metrics.run_metrics import fetch_row, build_universe_df
+from metrics.run_metrics import build_universe_df, add_earnings_yield_boost
 from metrics.value_quality import add_value_quality_metrics
 from calc.rank import add_ranks, FINAL_ORDER
-from core.fundamentals_cache import load_cached
-# from core.fundamentals_cache import refresh_if_needed
-# choose your TTL here (days). Set to 10 for your requirement.
-FUND_TTL_DAYS = 10
-from core.excel_export import export_to_excel
+from core.paths import OUTPUT_DIR
+from core.excel_export import export_to_excel, SCI_COLS
 
 try:
     from universes import (
@@ -30,14 +24,14 @@ try:
 except ImportError as err:  # pragma: no-cover
     sys.exit(f"❌  universes.py missing or broken – {err}")
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 # e.g. “20250606_143022” for YYYYMMDD_HHMMSS
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 # HQM settings ---------------------------------------
-rank_days = [3, 8, 17, 36]     # <- Modify HQM Return Windows here
-screen_days = 36
+rank_days = [3, 14, 35, 70]     # <- Modify HQM Return Windows here
+screen_days = 70
 def _parse_args() -> str:
     parser = argparse.ArgumentParser(description="Fetch TTM & valuation metrics")
     parser.add_argument(
@@ -66,25 +60,21 @@ def main() -> None:  # pragma: no-cover
 
     print(f"📥  Universe '{universe}' – {len(symbols)} symbols")
 
-    # ── ➊ Refresh price history for HQM ────────────────────────────────
-    price_mi = update_universe(universe, symbols)  # MultiIndex frame
+    # ── ➊ + ➋ Prices (HQM) and fundamentals run side by side ─────────────
+    # Both are network-bound and share one FMP rate limiter (core/cache.py),
+    # so they overlap while each waits on the API.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fund_future = pool.submit(build_universe_df, symbols, universe)
+        price_mi = update_universe(universe, symbols)  # MultiIndex frame
+        df_fundamantals = fund_future.result()
+
     price_mi = price_mi.drop(columns=["open", "high", "low"], errors="ignore")
     # price_mi = _load_prices(universe)
 
-    # load or create fundamentals dataframe
-    df_fundamantals = load_cached(universe)
-    
-    fundamentals_path = Path(f"data/fundamentals/{universe}_fundamentals.parquet")
-    print(f"📂 Fundamentals cache path → {fundamentals_path}")
-
-    # If cache is missing/corrupt, rebuild fundamentals now and continue.
-    if df_fundamantals is None:
-        print("🧰 No cached fundamentals. Rebuilding now…")
-        # build_universe_df uses refresh_if_needed under the hood and saves the cache
-        df_fundamantals = build_universe_df(symbols, universe, price_mi)
-        # ensure index=ticker for the rest of main()
-        if "ticker" in df_fundamantals.columns:
-            df_fundamantals = df_fundamantals.set_index("ticker")
+    # earnings-yield boost needs both the EPS history (fundamentals) and prices
+    df_fundamantals = add_earnings_yield_boost(df_fundamantals, price_mi)
+    missing_fund = [s for s in symbols if s not in df_fundamantals.index]
+    # ensure index=ticker for the rest of main()
     # print("\nDataFrame structure:")
     # print(f"Index: {df.index.name}")
     # print(f"Columns: {df.columns.tolist()}")
@@ -98,9 +88,6 @@ def main() -> None:  # pragma: no-cover
     tickers_in_prices = price_mi.index.get_level_values("ticker").unique()
     valid_tickers = df_fundamantals.index.intersection(tickers_in_prices)
     missing_tickers = df_fundamantals.index.difference(tickers_in_prices)
-
-    if not missing_tickers.empty:
-        print(f"⚠️ Warning: {len(missing_tickers)} tickers missing price data: {list(missing_tickers[:5])}...")
 
     # Safely slice only valid tickers
     price_mi = price_mi.loc[pd.IndexSlice[:, valid_tickers], :]
@@ -129,13 +116,6 @@ def main() -> None:  # pragma: no-cover
 
     pct_HQM_cols = list(rename_map.values())      
 
-    print("\n🧪 Sector check:")
-    for sec, group in df.groupby("sector"):
-        avg_val = group["VALUE_SCORE"].mean()
-        avg_qual = group["QUALITY_SCORE"].mean()
-        avg_robust = group["ROBUST_SCORE"].mean()
-        print(f"{sec:<25} → V:{avg_val:.3f}, Q:{avg_qual:.3f}, R:{avg_robust:.3f}")
-
     # rank each ticker _within its sector_ by HQM Score
     df["sector_rank"] = (
         df.groupby("sector")["HQM_SCORE"]
@@ -154,49 +134,23 @@ def main() -> None:  # pragma: no-cover
         .loc[:, full_cols]
     )
 
-    # 1) Round numeric values
-    # Round all float columns EXCEPT TURNOVER_RATIO to 2 decimal places
-    for col in df.select_dtypes(include='float'):
-        if col == "TURNOVER_RATIO":
-            df[col] = df[col].round(6)  # or however many places you want
-        else:
-            df[col] = df[col].round(2)
+    # 1) Round the Excel copy (the parquet below keeps full precision)
+    #    percent returns & price → 2 dp; percentile ranks, scores, yields, boosts → 4 dp;
+    #    SCI_COLS stay unrounded and are shown in scientific notation by the export instead
+    two_dp = [*pct_HQM_cols, "price"]
+    for col in df_full.select_dtypes(include="float").columns:
+        if col in SCI_COLS:
+            continue
+        df_full[col] = df_full[col].round(2 if col in two_dp else 4)
 
     # 2) Export to Excel with styling
-    excel_path = Path(f"data/{universe}_metrics_{ts}.xlsx")
+    out_dir = OUTPUT_DIR / universe
+    excel_path = out_dir / f"{universe}_metrics_{ts}.xlsx"
     excel_path.parent.mkdir(parents=True, exist_ok=True)
     export_to_excel(df_full, excel_path)
 
-    # Ensure we keep only columns that actually exist (some tickers may miss data)
-    # ─ Focused coverage report (only metrics in FINAL_ORDER) ──────────────────
-    final_cols = [c for c in FINAL_ORDER if c in df.columns]
-
-    # 1) Percent non‑null for just those columns
-    cov_final = (1 - df[final_cols].isna().mean()).loc[final_cols]
-
-    print("\nData coverage for final metrics (ordered):")
-    print(cov_final.to_string(float_format="{:.1%}".format))
-
-    # 2) Which tickers are missing each metric (<100 % coverage)?
-    missing_info = {
-        col: df.index[df[col].isna()].tolist()
-        for col, pct in cov_final.items()
-        if pct < 1.0
-    }
-
-    if missing_info:
-        print("\nFields with missing data:")
-        for col, tkrs in missing_info.items():
-            pct = cov_final[col]
-            print(f"  • {col} ({pct:.1%} coverage) → missing: {tkrs}")
-    else:
-        print("\n✅ All final‑metric columns are 100 % complete among selected tickers.")
-
-    # Define minimal output columns in desired order
-    # ---- build minimal preview ----
-    final_cols = ["ROBUST_SCORE", "HQM_SCORE", "DOLLAR_VOLUME", "TURNOVER_RATIO", "price"]
-    preview_cols = ["sector", "sector_rank"] + final_cols
-
+    # ---- terminal preview: top 20 by HQM Score ----
+    preview_cols = ["sector", "sector_rank", "HQM_SCORE", "ROBUST_SCORE", "DOLLAR_VOLUME", "TURNOVER_RATIO", "price"]
     out = (
         df.sort_values("HQM_SCORE", ascending=False)
         .reset_index(names="tkr")
@@ -205,16 +159,33 @@ def main() -> None:  # pragma: no-cover
         .reset_index(drop=True)
     )
     out.insert(0, "rank", np.arange(1, len(out) + 1))
+    out["DOLLAR_VOLUME"] = out["DOLLAR_VOLUME"].map(lambda v: f"{v:.3e}")
+    out["TURNOVER_RATIO"] = out["TURNOVER_RATIO"].map(lambda v: f"{v:.3e}")
+    out[["HQM_SCORE", "ROBUST_SCORE"]] = out[["HQM_SCORE", "ROBUST_SCORE"]].round(4)
 
-    print("\nTop‑20 by ROBUST_SCORE:")
+    print("\nTop‑20 by HQM_SCORE:")
     with pd.option_context("display.max_columns", None, "display.width", 160):
         print(out.to_markdown(index=False))
 
     # ─ Save to disk for downstream screener if you like ───────────────────────
-    outpath = Path("data/metrics_raw.parquet")
+    outpath = OUTPUT_DIR / universe / "metrics_raw.parquet"
     outpath.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(outpath)
     print(f"\n✅  Saved raw metrics → {outpath}")
+
+    # ─ End-of-run summary ─────────────────────────────────────────────────
+    print(f"\nData gaps: {len(missing_tickers)} without price history · {len(missing_fund)} without fundamentals")
+    backups = (
+        df_fundamantals.get("backups_used", pd.Series(dtype=object))
+        .fillna("").astype(str)
+        .str.split(";").explode()
+    )
+    backups = backups[backups != ""].value_counts()
+    print("\nBackups used (times per field):")
+    if backups.empty:
+        print("  none")
+    for field, n in backups.items():
+        print(f"  {field:<32} {n}")
 
 if __name__ == "__main__":
     main()

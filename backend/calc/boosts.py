@@ -24,9 +24,8 @@ from __future__ import annotations
 
 import pandas as pd
 import numpy as np
-from typing import Sequence
 
-from core.helpers import slope_uniform
+from calc.stats import slope_uniform
 
 __all__ = [
     "ebit_boost",
@@ -186,16 +185,12 @@ def revenue_boost(iq_df: pd.DataFrame, *, years: int = 4) -> float | None:
     year_earliest= recent.iloc[-1]["year"]
     delta_years  = year_latest - year_earliest
 
-    try:
-        cagr = (rev_latest / rev_earliest) ** (1 / delta_years) - 1
-        if not np.isfinite(cagr):
-            cagr = np.nan
-    except Exception:
-        cagr = np.nan
+    # ------------------------------------------------------------------
+    # 4️⃣  CAGR calculation (no CAGR when either endpoint is ≤ 0)
+    # ------------------------------------------------------------------
+    if rev_latest <= 0 or rev_earliest <= 0 or delta_years <= 0:
+        return None
 
-    # ------------------------------------------------------------------
-    # 4️⃣  CAGR calculation
-    # ------------------------------------------------------------------
     cagr = (rev_latest / rev_earliest) ** (1 / delta_years) - 1
     return float(cagr)
 

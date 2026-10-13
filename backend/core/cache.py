@@ -1,19 +1,21 @@
 # core/cache.py
 
-import os
 import time
+import threading
 import json
 import hashlib
 import pathlib
 import requests
+
+from core.paths import CACHE_DIR
 
 # ------------------------------------------------------------ #
 # 1. Configuration:                                          #
 # ------------------------------------------------------------ #
 
 # Where on disk we store cached JSON files
-_CACHE_DIR = pathlib.Path(".cache_fmp")  
-_CACHE_DIR.mkdir(exist_ok=True)
+_CACHE_DIR = CACHE_DIR
+_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # How many seconds a cached file remains “fresh” before we re-download it
 # (e.g., 3600 = 1 hour; set to a larger value if you don’t need intraday accuracy)
@@ -23,11 +25,25 @@ DEFAULT_TTL = 86400
 # 86_400      # 1 day
 # 2_592_000   # 30 days (≈ 1 month)
 
-# Ensure we don’t exceed ~290 requests/minute → sleep between calls
-MAX_REQUESTS_PER_MINUTE = 299  
-_SLEEP_SEC = 60.0 / MAX_REQUESTS_PER_MINUTE 
+# Ensure we don’t exceed ~275 requests/minute → sleep between calls
+MAX_REQUESTS_PER_MINUTE = 275
+_SLEEP_SEC = 60.0 / MAX_REQUESTS_PER_MINUTE
 # _SLEEP_SEC = 60.0 / 1200
 # _SLEEP_SEC = 0
+
+# Shared by every thread: each network call reserves the next free slot.
+_rate_lock = threading.Lock()
+_next_slot = 0.0
+
+def _throttle() -> None:
+    """Block until this thread's network call is allowed under MAX_REQUESTS_PER_MINUTE."""
+    global _next_slot
+    with _rate_lock:
+        now = time.monotonic()
+        wait = max(0.0, _next_slot - now)
+        _next_slot = max(now, _next_slot) + _SLEEP_SEC
+    if wait:
+        time.sleep(wait)
 
 
 # ------------------------------------------------------------ #
@@ -82,7 +98,7 @@ def cached_get_json(
                 pass
 
     # 3. Need to fetch fresh  → only now do we sleep
-    #time.sleep(_SLEEP_SEC)  # simple rate-limit throttle
+    _throttle()
 
     try:
         resp = requests.get(url, timeout=20)
